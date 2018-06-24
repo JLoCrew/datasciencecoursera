@@ -1,0 +1,160 @@
+---
+title: "DataScience_Capstone_Wk2"
+author: "Joyce Lo"
+date: "June 14, 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+#Overview
+
+The purpose of this week's assignment is to show my progress towards the greater Capstone project - creation of a predictive text model.  In this assignment, I will demonstrate my ability to a) import the data, b) cleanse and format the data, and c) conduct exploratory analysis like word count evaluation.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, suppressMessages(TRUE), suppressWarnings(TRUE))
+```
+
+# Import Data
+The data source is HC Corpora.  For the project, I am using the three files in the "en_us" subfolder only.  
+```{r downloadData, eval=FALSE} 
+fileURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+if(!file.exists("data")){dir.create("data")}
+download.file(fileURL, destfile = "./data/Coursera-SwiftKey.zip")
+unzip(zipfile = "./data/Coursera-Swiftkey.zip", exdir = "./data")
+```
+
+# Read Files and Basic Summaries
+We now read the files and explore some basic metrics like a) word count, line counts, file size of the three text files.
+``` {r readFiles, warning=FALSE, message=FALSE}
+library(ngram)
+library(tm)
+library(SnowballC)
+
+twitter <- readLines("./data/final/en_us/en_US.twitter.txt")
+blogs <- readLines("./data/final/en_us/en_US.blogs.txt")
+news <- readLines("./data/final/en_us/en_US.news.txt")
+
+text_summary <- data.frame('File' = c("Twitter", "Blogs", "News"),
+                           'Count_of_Words' = sapply(list(twitter, blogs, news), function(x){format(wordcount(x), sep=" ", count.function=sum)}),
+                           'Count_of_Lines' = sapply(list(twitter, blogs, news), function(x) {length(x)}),
+                           'File_size' = sapply(list(twitter, blogs, news), function(x){format(object.size(x), "MB")})
+                          )
+
+text_summary
+
+```
+
+
+# Sampling, cleansing and formatting of data
+
+## Sampling 10% of the lines
+I shall use 10% of the lines for the training set.  
+``` {r sample, eval = FALSE}
+twittersample <- twitter[rbinom(length(twitter)*0.1, length(twitter), 0.1)]  #I just want 10% of lines
+write.table(twittersample, file="./data/final/en_us/samples/twittersample_en_US.csv",row.names=FALSE,sep=",")
+close(twitter)
+rm(twitter) #remove this big file
+
+blogssample <- blogs[rbinom(length(blogs)*0.1, length(blogs), 0.1)] #I just want 10% of the lines
+write.table(blogssample, file="./data/final/en_us/samples/blogssample_en_US.csv", row.names=FALSE, sep=",")
+close.connection(blogs)
+rm(blogs)
+
+newssample <- news[rbinom(length(news)*0.1, length(news), 0.1)]
+write.table(newssample, file="./data/final/en_us/samples/newssample_en_US.csv", row.names=FALSE, sep=",")
+close(news)
+rm(news)
+```
+
+## Creating corpus
+Now I shall create a corpus by aggregating these three sampled files
+``` {r corpus, results='hide', eval = FALSE}
+#devtools::install_cran("tm", force=T)
+
+mycorpus <- Corpus(DirSource("./data/final/en_us/samples"), readerControl = list(reader=readPlain, language = "en_US"))
+meta(mycorpus)
+meta(mycorpus[[1]], "id")
+inspect(mycorpus[[2]])
+```
+
+## Formatting corpus
+Once we have a corpus, it is appropriate to modify the contents by means of transformation. In this context, transformation includes stemming, stopword removal, whitespace elimination and case conversion.  Transformations are done via the tm_map() function which applies (maps) a function to all elements of the corpus.  
+``` {r transform, eval = FALSE}
+# make eval = FALSE because this chunk only needs to be run once
+#let's remove punctuations and numbers first
+  mycorpus2 <- tm_map(mycorpus, removePunctuation)
+  mycorpus2 <- tm_map(mycorpus2, removeNumbers)
+
+  mycorpus2 <- tm_map(mycorpus2, content_transformer(tolower)) # let's transform texts into lower cases
+  mycorpus2 <- tm_map(mycorpus2, removeWords, stopwords("english")) #Next, remove stop words like "and", "for", "in", etc.
+  #mycorpus2 <- tm_map(mycorpus2, stemDocument, language = "english")#Now we do stemming - i.e. erase words' suffixes to retrieve their radicals.  e.g. 'engage', 'engaged', 'engaging' to 'engag'
+  mycorpus2 <- tm_map(mycorpus2, stripWhitespace)#Now we eliminate extra whitespace
+  mycorpus2 <- iconv(mycorpus2, "latin1", "ASCII", sub="")#Next, we get rid of non-ASCII characters
+  
+mycorpus2 <- Corpus(VectorSource(mycorpus2))#we need to turn this back to a corpus first
+  
+mycorpus2PTD <- tm_map(mycorpus2, PlainTextDocument)
+writeCorpus(mycorpus2PTD, "./data/final/en_US/Not_stemmed", filenames = NULL) #Finally, write this training set corpus
+
+
+```
+
+
+# Count-based evaluation
+Count-based evaluation is a simple, preliminary analysis whereby word(s) with the highest occurrence are rated as important.  We shall create a term-document matrix which contains frequency of a specific term in the corpus.  We will then create a histogram showing the most frequent word(s) in the corpus
+```{r n-gram}
+#options(mc.cores=1)
+#library(RWeka)
+library(ggplot2)
+
+
+newcorpus <- VCorpus(DirSource("./data/final/en_US/Not_stemmed")) #read the Corpus I saved
+
+newcorpusTDM <- TermDocumentMatrix(newcorpus, control = list(stopwords= TRUE))
+newcorpusTDM <- removeSparseTerms(newcorpusTDM, 0.999) #removing terms that occur in less than 1% of the Corpus
+newcorpusTDM <- data.frame(word = newcorpusTDM$dimnames$Terms, freq = newcorpusTDM$v) 
+one_ordered <- plyr::arrange(newcorpusTDM, -freq) #I just want to see the top x in the bar graph
+onegram_bar <- ggplot(one_ordered[1:10,], aes(x = reorder(word, - freq), y = freq)) + geom_bar(stat="identity", width=0.3, fill="tomato3") + theme(axis.text.x = element_text(angle=90))
+
+#next, I want to see the most frequent STRING of words
+#I tried RWeka many times to no avail - I ended up using ngram function from the tm package instead 
+#twogramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min=2, max=2))
+
+newcorpus <- as.VCorpus(newcorpus)
+twogramTokenizer <- function(x) {unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)}
+twogramTDM <- TermDocumentMatrix(newcorpus, control = list(tokenize = twogramTokenizer))
+twogramTDM <- data.frame(string = twogramTDM$dimnames$Terms, freq = twogramTDM$v)
+two_ordered <- plyr::arrange(twogramTDM, - freq)
+twogram_bar <- ggplot(two_ordered[1:10,], aes(x=reorder(string, -freq), y=freq)) + geom_bar(stat="identity", width=0.3, fill="purple") + theme(axis.text.x = element_text(angle=90))
+                                                                              
+
+threegramTokenizer <- function(x) {unlist(lapply(ngrams(words(x), 3), paste, collapse = " "), use.names = FALSE)}
+threegramTDM <- TermDocumentMatrix(newcorpus, control = list(tokenize = threegramTokenizer))
+threegramTDM <- data.frame(string = threegramTDM$dimnames$Terms, freq = threegramTDM$v)
+three_ordered <- plyr::arrange(threegramTDM, -freq)
+threegram_bar <- ggplot(three_ordered[1:30,], aes(x=reorder(string,-freq), y=freq)) + geom_bar(stat = "identity", width=0.3, fill="green") + theme(axis.text.x = element_text(angle=90))
+
+require(gridExtra)
+grid.arrange(onegram_bar, twogram_bar, ncol=2)
+
+threegram_bar
+
+```
+
+
+# Next steps
+My next steps include the development of an interactive word-predictor on shiny.app.  Here is my approach:
+  a) parse the one-gram, two-gram, three-gram TDM dataframes into matrices with n+1 column.  Each n column would contain the word and the n+1 column would contain the frequency
+  b) interactive app will strip the word inputted by the user of any numbers, punctuations, white space, and etc.  Afterwards, it will match the entered word against the first word of the the most frequently two-word phrase and return the second word.  This also applies if user entered two words
+  c) using the "stupid-backoff" approach, if no matches are found in the three-gram word matrix, R will retrieve to two-gram. If there are still no matches, then indicate so.
+  
+  
+# Citation
+I struggled with the RWeka package; specifically, it wouldn't generate the matrix of two-word or three-word strings.  I ended up researching online and found that "ngrams" function from the "tm" function is a sufficient alternative.  I didn't plagiarize - but I did use the codes suggested here: https://datascience.stackexchange.com/questions/18522/text-mining-in-r-without-rweka
+
+I also found these two articles very helpful: 
+ * https://www.jstatsoft.org/article/view/v025i05
+ * https://cran.r-project.org/web/packages/tm/vignettes/tm.pdf
+ 
