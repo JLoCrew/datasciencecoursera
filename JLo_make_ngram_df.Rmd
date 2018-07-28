@@ -1,0 +1,259 @@
+---
+title: "Capstone_Final"
+author: "Joyce Lo"
+date: "July 3, 2018"
+output: html_document
+---
+
+#Be the next Taylor Swift!
+
+For the Capstone project, I decided to put a fun twist to the text predictive model - I'm buiding a shiny app for user to predict song lyrics!  The dataset consists of lyrics from over 55000 songs which I downloaded from Kaggle.  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, suppressMessages(TRUE), suppressWarnings(TRUE))
+```
+
+
+#Import, Format, Partition data
+
+##Import data from Kaggle
+The data source is from Kaggle: https://www.kaggle.com/mousehead/songlyrics/downloads/songlyrics.zip/1
+```{r downloadData, eval = FALSE}
+setwd("H:/4. Joyce Lo/Coursera/Data Science/Class10_Capstone/FINAL")
+#unzip(zipfile = "./data/songlyrics.zip", exdir = "./data")
+```
+
+##Read files and summarize file
+```{r readFiles, warning=FALSE, message=FALSE}
+library(ngram)
+library(tm)
+library(SnowballC)
+library(stringi)
+library(tidyr)
+library(stringr)
+library(tidyverse)
+
+lyrics <- readLines("./data/songdata.txt")
+
+summary <- data.frame('Count_of_Words' = format(wordcount(lyrics), sep = " ", count.function=sum),
+                      'Count_of_Lines' = length(lyrics),
+                      'File_size' = format(object.size(lyrics), "MB"))
+print(summary)
+```
+
+##Sampling 100% of the lines - don't need this chunk anymore
+```{r sample, eval = FALSE}
+set.seed(2345)
+lyrics_sample <- lyrics[rbinom(length(lyrics)*1.0, length(lyrics), 1.0)]
+write.table(lyrics_sample, file = "./data/lyricspopulation.csv", row.names = FALSE, sep=",")
+close(lyrics)
+
+```
+
+##Create Corpus
+```{r createCorpus, eval = FALSE}
+
+mycorpus <- Corpus(VectorSource(lyrics), readerControl = list(reader=readPlain, language = "en_US"))
+meta(mycorpus)
+inspect(mycorpus[[2]])
+
+```
+
+##Format Corpus
+```{r transform, eval = FALSE}
+
+
+
+mycorpus2 <- tm_map(mycorpus, removePunctuation)
+mycorpus2 <- tm_map(mycorpus2, removeNumbers)
+
+mycorpus2 <- tm_map(mycorpus2, content_transformer(tolower))
+#mycorpus2 <- tm_map(mycorpus2, removeWords, stopwords("english"))  Let's try keeping the stopwords
+
+#mycorpus2 <- tm_map(mycorpus2, stemDocument, language = "english") I decided not to reduce words to their radicals
+
+mycorpus2 <- tm_map(mycorpus2, stripWhitespace)
+mycorpus2 <- iconv(mycorpus2, "latin1", "ASCII", sub="") #get rid of non-ASCII characters
+
+mycorpus2 <- Corpus(VectorSource(mycorpus2))
+
+mycorpus2PTD <- tm_map(mycorpus2, PlainTextDocument)
+writeCorpus(mycorpus2PTD, "./data/with_stopwords", filenames = NULL)
+
+```
+
+#Create n-grams dictionaries
+```{r createNGrams, eval = FALSE}
+
+newcorpus <- VCorpus(DirSource("./data/with_stopwords"))
+newcorpus <- tm_map(newcorpus, removePunctuation)  #I don't know why I have to do it twice but okay
+
+#Uni-gram
+newcorpusTDM <- TermDocumentMatrix(newcorpus, control = list(stopwords = TRUE))
+newcorpusTDM <- removeSparseTerms(newcorpusTDM, 0.99) #remove words that appear in less than 1% of the corpus
+newcorpusTDM <- data.frame(word = newcorpusTDM$dimnames$Terms, freq = newcorpusTDM$v)
+one_ordered <- plyr::arrange(newcorpusTDM, -freq)
+
+#Next, I want to create the bi-gram
+#I tried using RWeka to no avail - will use ngram function from the tm package instead
+
+newcorpus <- as.VCorpus(newcorpus)
+bigramTokenizer <- function(x) {unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)}
+bigramTDM <- TermDocumentMatrix(newcorpus, control = list(tokenize = bigramTokenizer))
+bigramTDM <- data.frame(word = bigramTDM$dimnames$Terms, freq = bigramTDM$v)
+two_ordered <- plyr::arrange(bigramTDM, - freq)
+
+#tri-gram
+
+trigramTokenizer <- function(x) {unlist(lapply(ngrams(words(x), 3), paste, collapse = " "), use.names = FALSE)}
+trigramTDM <- TermDocumentMatrix(newcorpus, control = list(tokenize = trigramTokenizer))
+trigramTDM <- data.frame(word = trigramTDM$dimnames$Terms, freq = trigramTDM$v)
+three_ordered <- plyr::arrange(trigramTDM, - freq)
+
+#quad-gram
+
+quadgramTokenizer <- function(x) {unlist(lapply(ngrams(words(x), 4), paste, collapse = " "), use.names = FALSE)}
+quadgramTDM <- TermDocumentMatrix(newcorpus, control = list(tokenize = quadgramTokenizer))
+quadgramTDM <- data.frame(word = quadgramTDM$dimnames$Terms, freq = quadgramTDM$v)
+four_ordered <- plyr::arrange(quadgramTDM, - freq)
+
+
+```
+
+#Predictive model
+
+My approach is as follows:
+a) Partition the word(s) from the ngram dataframes into dataframes with n columns
+b) Shiny app intakes the incoming corpus and formats it
+c) If incoming corpus is one word, it will output the top matches from bigram model; if two - match in trigram, if three - match in quadgram
+d) use stupid backoff model.  If there are no matches then roll back one word until matches are found.  If still no matches, indicate so
+
+##Partition the words
+
+```{r partition}
+
+two_partition <- separate(two_ordered, word, c("word1", "word2"), sep = " ")
+three_partition <- separate(three_ordered, word, c("word1", "word2", "word3"), sep = " ")
+four_partition <- separate(four_ordered, word, c("word1", "word2", "word3", "word4"), sep = " ")
+
+#save the dataframes
+saveRDS(two_partition, "./data/with_stopwords/two_partition.rds")
+saveRDS(three_partition, "./data/with_stopwords/three_partition.rds")
+saveRDS(four_partition, "./data/with_stopwords/four_partition.rds")
+
+```
+
+
+##Process the incoming Corpus and call the right ngram
+After cleaning the incoming Corpus, we need to call up the right ngram model
+ - if incoming corpus has one word, call up bigram model
+ - if 2, call up trigram,
+ - if 3, call up quadgram.
+Then, it need to match the words and return the last word
+
+```{r ReadnGrams}
+#let's read the files
+two_gram <- readRDS("./data/with_stopwords/two_partition.rds")
+three_gram <- readRDS("./data/cleansed/three_partition.rds")
+four_gram <- readRDS("./data/cleansed/four_partition.rds")
+```
+
+
+```{r processIncoming}
+
+
+ #+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++#
+   
+     #First, let's instruct R to actually match the words
+     #It applies the 'backoff model' concept
+        
+        bigram <- function(minicorpus){
+              ncount <- length(minicorpus)
+              filter(two_gram, word1==minicorpus[ncount]) %>%
+                top_n(1,n) %>%
+                filter(between(row_number(), 1, 3)) %>%
+                select(num_range("word", 2)) %>%
+                as.data.frame() -> nextword
+                ifelse(nrow(nextword)==0, "no match", return(nextword))
+                
+        }
+        
+        
+        trigram <- function(minicorpus){
+              ncount <- length(minicorpus)
+              filter(three_gram, word1 == minicorpus[ncount-1],
+                     word2== minicorpus[ncount]) %>%
+                      top_n(1,n)%>%
+                      filter(between(row_number(), 1, 3)) %>%
+                      select(num_range("word", 3)) %>%
+                      as.data.frame() -> nextword
+                      ifelse(nrow(nextword)==0, bigram(minicorpus), return(nextword))
+                      
+                      
+        }
+        
+        quadgram <- function(minicorpus){
+              ncount <- length(minicorpus)
+              filter(four_gram, word1 == minicorpus[ncount-2],
+                     word2 == minicorpus[ncount-1],
+                     word3 == minicorpus[ncount]) %>%
+                      top_n(1,n)%>%
+                      filter(between(row_number(), 1, 3)) %>%
+                      select(num_range("word", 4))  %>%
+                      as.data.frame() -> nextword
+                      ifelse(nrow(nextword)==0, trigram(minicorpus), return(nextword))
+        }
+        
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++#
+
+    #Then we instruct R to clean and format the incoming corpus
+    #R also needs to know call the ngram model to match the words and return the last word
+
+Clean_minicorpus <- function(incoming){
+  
+    # turn incoming text into a Corpus first
+  minicorpus <- Corpus(VectorSource(incoming), readerControl = list(reader=readPlain, language = "en_US"))
+  # clean up this little corpus
+  minicorpus <- tm_map(minicorpus, removePunctuation)
+  minicorpus <- tm_map(minicorpus, removeNumbers)
+  minicorpus <- tm_map(minicorpus, content_transformer(tolower))
+  #minicorpus <- tm_map(minicorpus, removeWords, stopwords("english"))
+  minicorpus <- tm_map(minicorpus, stripWhitespace)
+  minicorpus <- iconv(minicorpus, "latin1", "ASCII", sub="")
+  
+  minicorpus <- trimws(minicorpus, "l")
+  
+  #I just want the first column
+  minicorpus <- minicorpus[[1]]
+  
+  #count number of words
+    wordcount <- function(str) {
+    sapply(gregexpr("\\b\\W+\\b", str,  perl = TRUE), function(x) sum(x>0) ) +1
+}
+ncount <- wordcount(minicorpus[[1]])
+
+print(ncount)
+
+  #chop the incoming corpus into individual words
+  minicorpus <- unlist(str_split(minicorpus, boundary("word")))
+  
+  print(minicorpus)
+
+ #+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++#
+
+  #Call the right ngram
+         
+        ngram <- ifelse(ncount ==1, bigram(minicorpus), 
+                        ifelse(ncount ==2, trigram(minicorpus), quadgram(minicorpus)))
+        
+        print(ngram)
+        
+        return(ngram)
+  
+
+
+}
+
+
+```
+
